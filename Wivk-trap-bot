@@ -1,0 +1,79 @@
+
+import requests
+import time
+
+# === CONFIG ===
+TELEGRAM_BOT_TOKEN = '8131054512:AAEwI6PuGSmMNFBdUl8RGKddRxPlpsRw1Dg'  # Your bot token
+CHAT_ID = '6760333242'           # Your Telegram chat ID
+SPIKE_THRESHOLD = 5.0                 # Minimum % change to count as spike
+INTERVAL = '1h'                       # Timeframe
+LIMIT = 1                             # Last 1 candle
+TOP_N_NEW_COINS = 50                 # Scans 50 newest coins
+CHECK_INTERVAL = 3600                # 1 hour in seconds
+
+# === Send Telegram alert ===
+def send_telegram_alert(message):
+    url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
+    payload = {'chat_id': CHAT_ID, 'text': message}
+    try:
+        requests.post(url, data=payload)
+    except Exception as e:
+        print(f"Telegram Error: {e}")
+
+# === Get newest USDT futures coins ===
+def get_new_usdt_futures():
+    try:
+        url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+        response = requests.get(url).json()
+        sorted_by_time = sorted(response['symbols'], key=lambda x: x['onboardDate'], reverse=True)
+        recent_usdt = [
+            s['symbol'] for s in sorted_by_time
+            if s['quoteAsset'] == 'USDT' and s['status'] == 'TRADING'
+        ][:TOP_N_NEW_COINS]
+        return recent_usdt
+    except Exception as e:
+        print(f"Error fetching futures: {e}")
+        return []
+
+# === Wick Trap Logic ===
+def check_wick_traps(symbols):
+    for symbol in symbols:
+        try:
+            url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={INTERVAL}&limit={LIMIT}"
+            kline = requests.get(url).json()[0]
+            open_price = float(kline[1])
+            high = float(kline[2])
+            low = float(kline[3])
+            close_price = float(kline[4])
+
+            body = abs(close_price - open_price)
+            upper_wick = high - max(close_price, open_price)
+            lower_wick = min(close_price, open_price) - low
+            change_pct = ((close_price - open_price) / open_price) * 100
+
+            if (
+                change_pct >= SPIKE_THRESHOLD and
+                upper_wick >= 2 * body and
+                upper_wick > lower_wick
+            ):
+                message = (
+                    f"ðŸš¨ WICK TRAP SPIKE DETECTED (1H)\n"
+                    f"Symbol: {symbol}\n"
+                    f"Open: {open_price:.4f}\n"
+                    f"Close: {close_price:.4f}\n"
+                    f"High: {high:.4f}\n"
+                    f"Body: {body:.4f}\n"
+                    f"Upper Wick: {upper_wick:.4f}\n"
+                    f"Change: {change_pct:.2f}% ðŸ”¥"
+                )
+                send_telegram_alert(message)
+
+        except Exception as e:
+            print(f"Error checking {symbol}: {e}")
+
+# === Run Loop ===
+while True:
+    print("ðŸ“¡ Scanning 1H wick traps...")
+    latest_coins = get_new_usdt_futures()
+    check_wick_traps(latest_coins)
+    time.sleep(CHECK_INTERVAL)
